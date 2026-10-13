@@ -146,6 +146,7 @@ interface UserApiInfo {
     version: number | string
     author: string
     homepage: string
+    updateUrl?: string
     script: string
     sources: Record<string, any>
     enabled: boolean
@@ -219,6 +220,9 @@ export function extractMetadata(script: string): Partial<UserApiInfo> {
         // @repository or @homepage
         const repoMatch = comment.match(/@(?:repository|homepage)\s+(.+)/)
         if (repoMatch) meta.homepage = repoMatch[1].trim()
+
+        const updateMatch = comment.match(/@(?:updateUrl|downloadUrl)\s+(\S+)/i)
+        if (updateMatch) meta.updateUrl = updateMatch[1]
     }
 
     return meta
@@ -257,9 +261,9 @@ async function createLxRequest(
                     callback.call(null, decontextify(err), null, null)
                 } else {
                     let parsedBody = body
-                    if (typeof body === 'string') {
+                    if (typeof body === 'string' || Buffer.isBuffer(body)) {
                         try {
-                            parsedBody = JSON.parse(body)
+                            parsedBody = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf-8') : body)
                         } catch { }
                     }
 
@@ -267,7 +271,9 @@ async function createLxRequest(
                         const targetData = parsedBody.data || parsedBody
                         const updateMsg = targetData.updateMsg || targetData.log || targetData.updateLog || targetData.msg
                         const updateUrl = targetData.updateUrl || targetData.url || targetData.downloadUrl
-                        if (updateMsg && (updateUrl || (typeof updateMsg === 'string' && /更新|update/i.test(updateMsg)))) {
+                        const isUpdateMessage = targetData.updateMsg || targetData.updateLog || targetData.updateUrl
+                            || (typeof updateMsg === 'string' && /更新|update/i.test(updateMsg))
+                        if (updateMsg && isUpdateMessage) {
                             onSniffUpdate({ log: String(updateMsg), updateUrl: updateUrl ? String(updateUrl) : '' })
                         }
                     }
@@ -316,6 +322,7 @@ export async function loadUserApi(apiInfo: UserApiInfo, register = true): Promis
     // 创建事件处理映射
     const eventHandlers = new Map<string, Function>()
     let registeredSources: any = {}
+    let detectedUpdateAlert: ApiStatusInfo['updateAlert']
 
     // ========== 关键修改：提前创建 initPromise ==========
     let initResolve: (() => void) | null = null
@@ -378,12 +385,10 @@ export async function loadUserApi(apiInfo: UserApiInfo, register = true): Promis
         request: await createLxRequest(
             !!apiInfo.allowUnsafeVM && !!global.lx.config['system.allowUnsafeVM'],
             (alert) => {
+                detectedUpdateAlert = { name: alert.name || fullApiInfo.name, log: alert.log, updateUrl: alert.updateUrl }
+                if (!register) return
                 const currentStatus = apiStatus.get(`${fullApiInfo.owner}_${fullApiInfo.id}`) || { status: 'success' as const }
-                currentStatus.updateAlert = {
-                    name: alert.name || fullApiInfo.name,
-                    log: alert.log,
-                    updateUrl: alert.updateUrl,
-                }
+                currentStatus.updateAlert = detectedUpdateAlert
                 apiStatus.set(`${fullApiInfo.owner}_${fullApiInfo.id}`, currentStatus)
             },
         ),
@@ -397,7 +402,7 @@ export async function loadUserApi(apiInfo: UserApiInfo, register = true): Promis
                 }
                 if (initResolve) initResolve()
             } else if (eventName === 'updateAlert') {
-                const error = new Error(`发现新版本,需要更新: ${JSON.stringify(dData)}`)
+                const error = new Error('发现新版本，需要更新')
                 const errorAny: any = error
                 errorAny.updateAlert = typeof dData === 'object' && dData !== null
                     ? {
@@ -406,6 +411,11 @@ export async function loadUserApi(apiInfo: UserApiInfo, register = true): Promis
                         updateUrl: dData.updateUrl || dData.url || dData.downloadUrl || '',
                     }
                     : { name: fullApiInfo.name, log: String(dData || ''), updateUrl: '' }
+                detectedUpdateAlert = errorAny.updateAlert
+                if (register) {
+                    const key = `${fullApiInfo.owner}_${fullApiInfo.id}`
+                    apiStatus.set(key, { ...(apiStatus.get(key) || { status: 'success' as const }), updateAlert: detectedUpdateAlert })
+                }
                 if (initReject) initReject(error)
             }
         },
@@ -529,7 +539,7 @@ export async function loadUserApi(apiInfo: UserApiInfo, register = true): Promis
         if (register) loadedApis.set(`${fullApiInfo.owner}_${apiInfo.id}`, apiInstance)
         console.log(`[UserApi] ✓ 成功加载: ${fullApiInfo.name} v${fullApiInfo.version} (Owner: ${fullApiInfo.owner})`)
         console.log(`[UserApi]   支持源: ${Object.keys(registeredSources).join(', ')}`)
-        return { success: true, apiInstance, error: null }
+        return { success: true, apiInstance, error: null, updateAlert: detectedUpdateAlert }
     } catch (error: any) {
         console.error(`[UserApi] ✗ 加载失败 ${fullApiInfo.name}:`, error.message)
         if (error.stack && error.message !== 'REQUIRE_UNSAFE_VM') {
@@ -537,7 +547,7 @@ export async function loadUserApi(apiInfo: UserApiInfo, register = true): Promis
         }
         // 返回详细错误信息而不是直接抛出
         const isRequireUnsafe = !apiInfo.allowUnsafeVM && (error.message === 'REQUIRE_UNSAFE_VM' || error.message.includes('初始化超时') || error.message.includes('timeout'))
-        return { success: false, apiInstance: null, error: error.message, requireUnsafe: isRequireUnsafe, updateAlert: error.updateAlert }
+        return { success: false, apiInstance: null, error: error.message, requireUnsafe: isRequireUnsafe, updateAlert: error.updateAlert || detectedUpdateAlert }
     }
 }
 
@@ -868,7 +878,7 @@ async function loadSourcesFromDir(dirPath: string, owner: string, stats: { loade
 
                 if (result.success) {
                     stats.loadedCount++
-                    apiStatus.set(`${owner}_${source.id}`, { status: 'success' })
+                    apiStatus.set(`${owner}_${source.id}`, { status: 'success', updateAlert: result.updateAlert })
 
                     // [Self-Healing] 检查并修复 supportedSources
                     const runtimeSources = Object.keys(result.apiInstance.info.sources).sort();
@@ -885,7 +895,7 @@ async function loadSourcesFromDir(dirPath: string, owner: string, stats: { loade
                     }
                 } else {
                     console.error(`[UserApi] [${owner}] 加载 ${metadata.name || source.name} 失败: ${result.error}`)
-                    apiStatus.set(`${owner}_${source.id}`, { status: 'failed', error: result.error })
+                    apiStatus.set(`${owner}_${source.id}`, { status: 'failed', error: result.error, updateAlert: result.updateAlert })
                 }
             } catch (error: any) {
                 console.error(`[UserApi] [${owner}] 加载 ${source.name} 失败:`, error.message)

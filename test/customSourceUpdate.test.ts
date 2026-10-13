@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isCustomSourceUpdateAvailable } from '../src/server/customSourceUpdate'
+import { isCustomSourceUpdateAvailable, normalizeCustomSourceUpdateUrl, parseCustomSourceUpdateResponse } from '../src/server/customSourceUpdate'
+
+test('resolves JSON update manifests, relative download links and explicit current-version replies', () => {
+    const base = 'https://example.com/api/update'
+    assert.deepEqual(parseCustomSourceUpdateResponse('{"code":200,"data":{"url":"../source.js"}}', base), { downloadUrl: 'https://example.com/source.js' })
+    assert.deepEqual(parseCustomSourceUpdateResponse('{"downloadUrl":"https://cdn.example.com/source.js"}', base), { downloadUrl: 'https://cdn.example.com/source.js' })
+    assert.deepEqual(parseCustomSourceUpdateResponse('{"code":0,"msg":"已是最新版本"}', base), { upToDate: true })
+    assert.equal(parseCustomSourceUpdateResponse('lx.send("inited", {});', base), undefined)
+    assert.throws(() => parseCustomSourceUpdateResponse('{"code":403,"msg":"denied"}', base))
+    assert.throws(() => parseCustomSourceUpdateResponse('{"code":0,"msg":"ok"}', base))
+    assert.throws(() => parseCustomSourceUpdateResponse('{"url":"file:///tmp/source.js"}', base))
+    assert.equal(normalizeCustomSourceUpdateUrl('javascript:alert(1)'), undefined)
+})
 
 test('ignores generated ISO timestamps in script comments', () => {
     const current = '/*\n * Generated at 2026-10-07T10:12:30.001Z\n */\nconst version = 1;\n'

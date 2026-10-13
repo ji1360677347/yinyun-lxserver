@@ -41,7 +41,9 @@ Authorization: Bearer <accessToken>
 - 音源更新：`POST /api/v1/player/custom-source/check-update` 检查远程脚本，`POST /api/v1/player/custom-source/update` 校验后备份并原位更新。
 - Subsonic：`/rest/<path>`。
 
-检查音源更新请求使用 `{ sourceId, sourceUrl?, allowUnsafeVM? }`。本地文件导入的音源可通过 `sourceUrl` 提供 HTTP/HTTPS 脚本下载地址；新地址通过脚本及身份校验后保存，检查本身不会替换脚本。没有保存地址且未提供地址时，响应包含 `needsSourceUrl: true`，不能据此认为音源已经是最新版本。共享只读音源只能由所有者配置地址和更新。
+检查音源更新请求使用 `{ sourceId, sourceUrl?, allowUnsafeVM? }`。未提供 `sourceUrl` 时，服务端自动使用已保存的远程地址、音源运行时的更新链接和脚本声明的 `@updateUrl` / `@downloadUrl`；支持直接脚本及含下载链接的 JSON 更新信息，相对链接按更新接口地址解析。明确返回“已是最新版本”时，响应为 `available: false`。
+
+只有确实没有可识别的地址时，响应才包含 `needsSourceUrl: true`，不能据此认为音源已经是最新版本。客户端此时可通过 `sourceUrl` 提供 HTTP/HTTPS 脚本下载地址或更新接口地址；新地址通过脚本及身份校验后保存，检查本身不会替换脚本。共享只读音源只能由所有者配置地址和更新。
 
 ## 破坏性迁移
 

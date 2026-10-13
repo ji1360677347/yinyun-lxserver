@@ -10993,14 +10993,7 @@ async function checkCustomSourceUpdate(sourceId, sourceUrl, allowUnsafeVM = fals
         if (!isUserLoggedIn() || !username) throw new Error('请先登录同步账户');
         const source = window.customSourceShareSources?.[sourceId];
         if (source?.readOnly) throw new Error('共享音源由所有者更新');
-        if (!source?.sourceUrl && sourceUrl === undefined) {
-            sourceUrl = await showInput('设置音源更新地址', '请输入该音源的 .js 脚本下载地址（不是作者主页）。保存后即可检查并更新。', {
-                placeholder: 'https://example.com/source.js', confirmText: '保存并检查'
-            });
-            if (sourceUrl === null) return false;
-            sourceUrl = sourceUrl.trim();
-        }
-        if (sourceUrl !== undefined && !/^https?:\/\//i.test(sourceUrl)) throw new Error('请填写有效的 HTTP/HTTPS 脚本下载地址');
+        if (sourceUrl !== undefined && !/^https?:\/\//i.test(sourceUrl)) throw new Error('请填写有效的 HTTP/HTTPS 更新地址');
         const headers = { 'Content-Type': 'application/json', ...getUserAuthHeaders() };
         const adminPass = localStorage.getItem('lx_admin_password');
         if (adminPass) headers['x-frontend-auth'] = adminPass;
@@ -11020,8 +11013,11 @@ async function checkCustomSourceUpdate(sourceId, sourceUrl, allowUnsafeVM = fals
         }
         if (!response.ok || !result.success) throw new Error(result.error || `HTTP ${response.status}`);
         if (result.needsSourceUrl) {
-            if (source) delete source.sourceUrl;
-            return checkCustomSourceUpdate(sourceId);
+            const url = await showInput('设置音源更新地址', '该音源未提供可自动识别的更新地址。可填写作者提供的脚本下载地址或更新接口地址；取消不影响正常使用。', {
+                placeholder: 'https://example.com/source.js', confirmText: '保存并检查'
+            });
+            if (url === null) return false;
+            return checkCustomSourceUpdate(sourceId, url.trim(), allowUnsafeVM);
         }
         window.customSourceUpdateAlerts = window.customSourceUpdateAlerts || {};
         if (result.available) {
@@ -11047,7 +11043,6 @@ async function updateCustomSource(sourceId, allowUnsafeVM = false) {
         if (!isUserLoggedIn() || !username) throw new Error('请先登录同步账户');
         const source = window.customSourceShareSources?.[sourceId];
         if (source?.readOnly) throw new Error('共享音源由所有者更新');
-        if (!source?.sourceUrl && !(await checkCustomSourceUpdate(sourceId))) return;
         const headers = { 'Content-Type': 'application/json', ...getUserAuthHeaders() };
         const adminPass = localStorage.getItem('lx_admin_password');
         if (adminPass) headers['x-frontend-auth'] = adminPass;
@@ -11057,6 +11052,10 @@ async function updateCustomSource(sourceId, allowUnsafeVM = false) {
             body: JSON.stringify({ username, sourceId, allowUnsafeVM })
         });
         const result = await response.json().catch(() => ({}));
+
+        if (result.needsSourceUrl) {
+            return await checkCustomSourceUpdate(sourceId) ? updateCustomSource(sourceId, allowUnsafeVM) : undefined;
+        }
 
         if (response.status === 403) {
             showError(result.error || '更新该音源需要管理员授权');
@@ -11074,7 +11073,7 @@ async function updateCustomSource(sourceId, allowUnsafeVM = false) {
 
         if (window.customSourceUpdateAlerts) delete window.customSourceUpdateAlerts[sourceId];
         await renderCustomSources();
-        showSuccess(result.updated === false ? '当前音源已经是最新版本' : `音源已更新至 v${result.version || '最新版本'}`);
+        showSuccess(result.updated === false ? '当前音源已经是最新版本' : `音源已更新至 ${result.version ? 'v' + String(result.version).replace(/^v/i, '') : '最新版本'}`);
     } catch (error) {
         console.error('[CustomSource] Update failed:', error);
         showError(`更新音源失败: ${error.message}`);

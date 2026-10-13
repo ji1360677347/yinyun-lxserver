@@ -1,8 +1,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import type { IncomingMessage, ServerResponse } from 'http'
-import { extractMetadata, loadUserApi, initUserApis, getApiStatus, clearApiUpdateAlert } from './userApi'
-import { isCustomSourceUpdateAvailable } from './customSourceUpdate'
+import { extractMetadata, loadUserApi, initUserApis, getApiStatus, clearApiUpdateAlert, type ApiStatusInfo } from './userApi'
+import { isCustomSourceUpdateAvailable, normalizeCustomSourceUpdateUrl, parseCustomSourceUpdateResponse } from './customSourceUpdate'
 import { normalizeUsername } from '@/utils/username'
 import { getUserSourcePath } from '@/user'
 import {
@@ -227,6 +227,7 @@ const getScriptInfo = async (scriptContent: string, allowUnsafeVM = false) => {
     let supportedSources: string[] = []
     let requireUnsafe = false
     let error = ''
+    let updateAlert: ApiStatusInfo['updateAlert']
     try {
         const result = await loadUserApi({
             id: 'temp_analysis',
@@ -236,6 +237,7 @@ const getScriptInfo = async (scriptContent: string, allowUnsafeVM = false) => {
             ...metadata,
             owner: 'temp',
         } as any, false)
+        updateAlert = result.updateAlert
         if (result.success && result.apiInstance?.info?.sources) {
             supportedSources = Object.keys(result.apiInstance.info.sources)
         } else {
@@ -246,7 +248,7 @@ const getScriptInfo = async (scriptContent: string, allowUnsafeVM = false) => {
         error = err.message || String(err)
         console.warn('[CustomSource] Failed to analyze source:', error)
     }
-    return { metadata, supportedSources, requireUnsafe, error }
+    return { metadata, supportedSources, requireUnsafe, error, updateAlert }
 }
 
 const authorizeUnsafeSource = (
@@ -387,8 +389,16 @@ const sourceIdentityMatches = (source: StoredSource, metadata: Partial<{ name?: 
     }
 }
 
-const getRemoteSourceInfo = async (source: StoredSource, sourceUrl: string, allowUnsafeVM: boolean, req: IncomingMessage, res: ServerResponse) => {
-    const content = await downloadScript(sourceUrl)
+const downloadSourceUpdate = async (targetUrl: string, depth = 0): Promise<{ content?: string, downloadUrl: string, upToDate?: boolean }> => {
+    if (depth > 3) throw new Error('音源更新地址循环或跳转次数过多')
+    const content = await downloadScript(targetUrl)
+    const info = parseCustomSourceUpdateResponse(content, targetUrl)
+    if (!info) return { content, downloadUrl: targetUrl }
+    if (info.upToDate) return { downloadUrl: targetUrl, upToDate: true }
+    return downloadSourceUpdate(info.downloadUrl!, depth + 1)
+}
+
+const getRemoteSourceInfo = async (source: StoredSource, content: string, downloadUrl: string, allowUnsafeVM: boolean, req: IncomingMessage, res: ServerResponse) => {
     const safeInfo = await getScriptInfo(content)
     if (safeInfo.requireUnsafe && !allowUnsafeVM) {
         sendJson(res, 200, {
@@ -405,10 +415,57 @@ const getRemoteSourceInfo = async (source: StoredSource, sourceUrl: string, allo
     if (scriptInfo.supportedSources.length === 0) {
         throw new Error(scriptInfo.error || '远程脚本未注册任何音乐平台')
     }
-    if (!sourceIdentityMatches(source, scriptInfo.metadata, sourceUrl)) {
+    if (!sourceIdentityMatches(source, scriptInfo.metadata, downloadUrl)) {
         throw new Error('远程脚本与当前音源身份不匹配，未执行更新')
     }
     return { content, ...scriptInfo }
+}
+
+const resolveSourceUpdate = async (
+    source: StoredSource, owner: string, currentContent: string, req: IncomingMessage, res: ServerResponse,
+    options: { sourceUrl?: unknown, allowUnsafeVM: boolean, validate: boolean },
+) => {
+    const metadata = extractMetadata(currentContent)
+    const values: unknown[] = [source.sourceUrl, getApiStatus(owner, source.id)?.updateAlert?.updateUrl, metadata.updateUrl]
+    const homepage = metadata.homepage || source.homepage
+    if (typeof homepage === 'string' && /\.js(?:[?#]|$)/i.test(homepage)) values.push(homepage)
+    let candidates = Array.from(new Set(values.map(value => normalizeCustomSourceUpdateUrl(value)).filter((value): value is string => !!value)))
+    if (options.sourceUrl !== undefined) {
+        const url = normalizeCustomSourceUpdateUrl(options.sourceUrl)
+        if (!url) throw new Error('音源更新地址必须为 HTTP/HTTPS URL')
+        candidates = [url]
+    } else if (!candidates.length && currentContent) {
+        const info = await getScriptInfo(currentContent, !!source.allowUnsafeVM)
+        const url = normalizeCustomSourceUpdateUrl(info.updateAlert?.updateUrl)
+        if (url) candidates.push(url)
+    }
+    if (!candidates.length) return undefined
+
+    let lastError: unknown
+    for (const targetUrl of candidates) {
+        try {
+            const downloaded = await downloadSourceUpdate(targetUrl)
+            if (downloaded.upToDate) {
+                if (!currentContent || (options.sourceUrl !== undefined && !values.some(value => normalizeCustomSourceUpdateUrl(value) === targetUrl))) {
+                    throw new Error('该地址未提供脚本，无法验证其属于当前音源')
+                }
+                return { content: currentContent, metadata, supportedSources: source.supportedSources, requireUnsafe: source.requireUnsafe, targetUrl, upToDate: true }
+            }
+            const content = downloaded.content!
+            const remoteMetadata = extractMetadata(content)
+            if (!sourceIdentityMatches(source, remoteMetadata, downloaded.downloadUrl)) {
+                throw new Error('远程脚本与当前音源身份不匹配，未执行更新')
+            }
+            const remote = options.validate || targetUrl !== source.sourceUrl
+                ? await getRemoteSourceInfo(source, content, downloaded.downloadUrl, options.allowUnsafeVM || !!source.allowUnsafeVM, req, res)
+                : { content, metadata: remoteMetadata, supportedSources: source.supportedSources, requireUnsafe: source.requireUnsafe }
+            if (!remote) return null
+            return { ...remote, targetUrl, upToDate: false }
+        } catch (error) {
+            lastError = error
+        }
+    }
+    throw lastError
 }
 
 export async function handleCheckUpdate(req: IncomingMessage, res: ServerResponse, username: string) {
@@ -419,35 +476,27 @@ export async function handleCheckUpdate(req: IncomingMessage, res: ServerRespons
         const sources = readSources(owner)
         const source = sources.find(item => item.id === targetId)
         if (!source) throw new Error('Source not found')
-        const targetUrl = sourceUrl === undefined ? source.sourceUrl : sourceUrl
-        if (!targetUrl) {
+        const currentScriptPath = path.join(getSourceDir(owner), source.id)
+        const currentContent = fs.existsSync(currentScriptPath) ? fs.readFileSync(currentScriptPath, 'utf-8') : ''
+        const remote = await resolveSourceUpdate(source, owner, currentContent, req, res, { sourceUrl, allowUnsafeVM: !!allowUnsafeVM, validate: false })
+        if (remote === null) return
+        if (!remote) {
             sendJson(res, 200, { success: true, available: false, needsSourceUrl: true, message: '请先设置音源脚本下载地址' })
             return
         }
-        if (typeof targetUrl !== 'string') throw new Error('音源更新地址必须为 HTTP/HTTPS URL')
-        const remoteUrl = new URL(targetUrl.trim())
-        if (!['http:', 'https:'].includes(remoteUrl.protocol)) throw new Error('只允许检查 HTTP/HTTPS 音源地址')
-        // Validate a newly supplied address before saving it; checking never replaces the script.
-        const changedUrl = sourceUrl !== undefined && remoteUrl.toString() !== source.sourceUrl
-        const remote = changedUrl
-            ? await getRemoteSourceInfo(source, remoteUrl.toString(), !!allowUnsafeVM || !!source.allowUnsafeVM, req, res)
-            : { content: await downloadScript(remoteUrl.toString()) }
-        if (!remote) return
         const content = remote.content
-        const remoteMeta = extractMetadata(content)
-        const currentScriptPath = path.join(getSourceDir(owner), source.id)
-        const currentContent = fs.existsSync(currentScriptPath) ? fs.readFileSync(currentScriptPath, 'utf-8') : ''
-        const available = isCustomSourceUpdateAvailable(currentContent, content, source.version, remoteMeta.version)
-        if (changedUrl) {
-            source.sourceUrl = remoteUrl.toString()
+        const remoteMeta = remote.metadata
+        const available = !remote.upToDate && isCustomSourceUpdateAvailable(currentContent, content, source.version, remoteMeta.version)
+        if (sourceUrl !== undefined && remote.targetUrl !== source.sourceUrl) {
+            source.sourceUrl = remote.targetUrl
             writeSources(owner, sources)
         }
         const status = getApiStatus(owner, source.id)
         if (available) {
             const updateAlert = {
                 name: String(remoteMeta.name || source.name),
-                log: `检测到远程音源${remoteMeta.version ? ` v${remoteMeta.version}` : ''}，当前版本为 v${source.version}`,
-                updateUrl: remoteUrl.toString(),
+                log: `检测到远程音源${remoteMeta.version ? ` v${String(remoteMeta.version).replace(/^v/i, '')}` : ''}，当前版本为 v${String(source.version).replace(/^v/i, '')}`,
+                updateUrl: remote.targetUrl,
             }
             sendJson(res, 200, { success: true, available: true, updateAlert, remoteMetadata: remoteMeta, status: status?.status })
             return
@@ -468,18 +517,17 @@ export async function handleUpdate(req: IncomingMessage, res: ServerResponse, us
         const sourceIndex = sources.findIndex(item => item.id === targetId)
         if (sourceIndex < 0) throw new Error('Source not found')
         const source = sources[sourceIndex]
-        if (!source.sourceUrl) throw new Error('该音源没有可更新的远程地址')
-
-        const remoteUrl = new URL(source.sourceUrl)
-        if (!['http:', 'https:'].includes(remoteUrl.protocol)) throw new Error('只允许更新 HTTP/HTTPS 音源')
-        const remote = await getRemoteSourceInfo(source, remoteUrl.toString(), !!allowUnsafeVM || !!source.allowUnsafeVM, req, res)
-        if (!remote) return
-
         const sourceDir = getSourceDir(owner)
         const scriptPath = path.join(sourceDir, source.id)
         const oldContent = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf-8') : ''
+        const remote = await resolveSourceUpdate(source, owner, oldContent, req, res, { allowUnsafeVM: !!allowUnsafeVM, validate: true })
+        if (remote === null) return
+        if (!remote) {
+            sendJson(res, 200, { success: false, needsSourceUrl: true, message: '该音源未提供更新地址，请先设置脚本下载地址' })
+            return
+        }
         const oldSources = JSON.stringify(sources)
-        if (!isCustomSourceUpdateAvailable(oldContent, remote.content, source.version, remote.metadata.version)) {
+        if (remote.upToDate || !isCustomSourceUpdateAvailable(oldContent, remote.content, source.version, remote.metadata.version)) {
             clearApiUpdateAlert(owner, source.id)
             sendJson(res, 200, { success: true, updated: false, version: source.version })
             return

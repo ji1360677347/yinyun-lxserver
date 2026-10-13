@@ -43,11 +43,12 @@ test('both source lists show update checks for uploaded and disabled sources, bu
   }
 })
 
-test('missing update URL prompts once, cancellation sends no request, existing URL checks directly', async () => {
+test('server discovery runs before prompting; cancellation never saves an address', async () => {
   const requests: any[] = []
   const messages: string[] = []
   let input: string | null = null
   let prompts = 0
+  let saved = false
   const context = vm.createContext({
     window: { customSourceShareSources: { uploaded: {} } },
     localStorage: { getItem: (key: string) => key === 'lx_sync_user' ? 'owner' : '' },
@@ -58,19 +59,45 @@ test('missing update URL prompts once, cancellation sends no request, existing U
     renderCustomSources: async () => {},
     fetch: async (_: string, options: any) => {
       requests.push(JSON.parse(options.body))
-      return { ok: true, status: 200, json: async () => ({ success: true, available: false }) }
+      if (requests.at(-1).sourceUrl) saved = true
+      return { ok: true, status: 200, json: async () => saved
+        ? { success: true, available: false }
+        : { success: true, available: false, needsSourceUrl: true } }
     },
   })
   vm.runInContext(declaration('checkCustomSourceUpdate'), context)
   assert.equal(await vm.runInContext("checkCustomSourceUpdate('uploaded')", context), false)
-  assert.equal(requests.length, 0)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].sourceUrl, undefined)
   assert.equal(messages.length, 0)
   input = ' https://example.com/source.js '
   assert.equal(await vm.runInContext("checkCustomSourceUpdate('uploaded')", context), true)
-  assert.equal(requests[0].sourceUrl, input.trim())
+  assert.equal(requests[2].sourceUrl, input.trim())
   context.window.customSourceShareSources.uploaded = { sourceUrl: input.trim() } as any
   await vm.runInContext("checkCustomSourceUpdate('uploaded')", context)
   assert.equal(prompts, 2)
-  assert.equal(requests[1].sourceUrl, undefined)
+  assert.equal(requests[3].sourceUrl, undefined)
   assert.equal(messages.length, 2)
+})
+
+test('script-declared updates and direct updates never request a manually entered URL', async () => {
+  const requests: string[] = []
+  const context = vm.createContext({
+    window: { customSourceShareSources: { uploaded: {} } },
+    localStorage: { getItem: (key: string) => key === 'lx_sync_user' ? 'owner' : '' },
+    isUserLoggedIn: () => true, getUserAuthHeaders: () => ({}),
+    showInput: () => assert.fail('Automatic discovery must not prompt'),
+    showSuccess: () => {}, showInfo: () => {}, showError: (message: string) => assert.fail(message), console,
+    renderCustomSources: async () => {},
+    fetch: async (url: string) => {
+      requests.push(url)
+      return { ok: true, status: 200, json: async () => url.endsWith('/check-update')
+        ? { success: true, available: true, updateAlert: { updateUrl: 'https://example.com/script.js' } }
+        : { success: true, updated: true, version: '2.0.0' } }
+    },
+  })
+  vm.runInContext(declaration('checkCustomSourceUpdate') + '\n' + declaration('updateCustomSource'), context)
+  assert.equal(await vm.runInContext("checkCustomSourceUpdate('uploaded')", context), true)
+  await vm.runInContext("updateCustomSource('uploaded')", context)
+  assert.deepEqual(requests, ['/api/v1/player/custom-source/check-update', '/api/v1/player/custom-source/update'])
 })

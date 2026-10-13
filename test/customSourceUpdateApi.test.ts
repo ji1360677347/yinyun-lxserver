@@ -20,6 +20,7 @@ test('file-imported sources can save a validated update URL and update in place'
     `/**\n * @name ${name}\n * @version ${version}\n */\nlx.send('inited', { sources: { tx: { name: 'QQ', type: 'music', actions: ['musicUrl'], qualitys: ['128k'] } } });\n`
   const current = makeScript('1.0.0')
   let remote = current
+  let audioRequested = false
   const stored = {
     id: 'Test source.js', name: 'Test source', version: '1.0.0', enabled: false,
     supportedSources: ['tx'], allowUnsafeVM: false, requireUnsafe: false,
@@ -32,6 +33,13 @@ test('file-imported sources can save a validated update URL and update in place'
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://localhost')
     if (url.pathname === '/script.js' || decodeURIComponent(url.pathname) === '/Test source.js') return void res.end(remote)
+    if (url.pathname === '/manifest') return void res.end(JSON.stringify(url.searchParams.get('version') === '2.0.0'
+      ? { code: 0, msg: '已是最新版本' }
+      : { code: 200, data: { url: './script.js', name: stored.name, version: '2.0.0' } }))
+    if (url.pathname === '/runtime') return void res.end(JSON.stringify({ data: { log: 'new update', downloadUrl: origin + '/script.js' } }))
+    if (url.pathname === '/audio') return void res.end(JSON.stringify({ msg: 'ok', url: origin + '/audio.mp3' }))
+    if (url.pathname === '/audio.mp3') { audioRequested = true; return void res.end('audio data') }
+    if (url.pathname === '/loop') return void res.end(JSON.stringify({ url: './loop' }))
     if (url.pathname === '/missing.js') { res.writeHead(404); return void res.end() }
     const username = url.searchParams.get('username') || 'owner'
     if (url.pathname === '/check') return void handlers.handleCheckUpdate(req, res, username)
@@ -94,6 +102,44 @@ test('file-imported sources can save a validated update URL and update in place'
     assert.equal(fs.readFileSync(scriptPath, 'utf8'), remote)
     assert.equal(fs.readFileSync(path.join(sourceDir, updated.backup), 'utf8'), current)
     assert.equal((await request('check', {})).available, false)
+
+    // An existing uploaded source discovers its declared update API, without a saved URL.
+    fs.writeFileSync(metadataPath, JSON.stringify([stored]))
+    const withEndpoint = (version: string) => makeScript(version).replace(' */', ` * @updateUrl ${origin}/manifest?version=${version}\n */`)
+    fs.writeFileSync(scriptPath, withEndpoint('1.0.0'))
+    remote = withEndpoint('2.0.0')
+    const automatic = await request('check', {})
+    assert.equal(automatic.available, true)
+    assert.equal(automatic.needsSourceUrl, undefined)
+    assert.equal(metadata().sourceUrl, undefined)
+    assert.equal((await request('update', {})).updated, true)
+    assert.equal(metadata().sourceUrl, undefined)
+    assert.equal(fs.readFileSync(scriptPath, 'utf8'), remote)
+    assert.equal((await request('check', {})).available, false)
+    assert.equal((await request('update', {})).updated, false)
+    assert.equal((await request('check', { sourceUrl: origin + '/loop' })).success, false)
+    assert.equal(metadata().sourceUrl, undefined)
+
+    // Invalid saved URLs fall back to the script's own valid endpoint.
+    fs.writeFileSync(metadataPath, JSON.stringify([{ ...stored, sourceUrl: origin + '/missing.js' }]))
+    assert.equal((await request('check', {})).available, false)
+    assert.equal(metadata().sourceUrl, origin + '/missing.js')
+
+    // Both LX updateAlert events and JSON response announcements can supply a download link.
+    fs.writeFileSync(metadataPath, JSON.stringify([stored]))
+    for (const announce of [
+      `lx.send('updateAlert', { updateUrl: '${sourceUrl}' });`,
+      `lx.request('${origin}/runtime', {}, () => lx.send('inited', { sources: { tx: {} } }));`,
+    ]) {
+      fs.writeFileSync(scriptPath, `/**\n * @name Test source\n * @version 1.0.0\n */\n${announce}`)
+      const detected = await request('check', {})
+      assert.equal(detected.available, true)
+      assert.equal(detected.needsSourceUrl, undefined)
+      assert.equal(metadata().sourceUrl, undefined)
+    }
+    fs.writeFileSync(scriptPath, makeScript('1.0.0').replace("lx.send('inited',", `lx.request('${origin}/audio', {}, () => lx.send('inited',`).replace('});\n', '}));\n'))
+    assert.equal((await request('check', {})).needsSourceUrl, true)
+    assert.equal(audioRequested, false)
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
     fs.rmSync(root, { recursive: true, force: true })
