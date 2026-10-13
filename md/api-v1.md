@@ -41,6 +41,8 @@ Authorization: Bearer <accessToken>
 - 音源更新：`POST /api/v1/player/custom-source/check-update` 检查远程脚本，`POST /api/v1/player/custom-source/update` 校验后备份并原位更新。
 - Subsonic：`/rest/<path>`。
 
+检查音源更新请求使用 `{ sourceId, sourceUrl?, allowUnsafeVM? }`。本地文件导入的音源可通过 `sourceUrl` 提供 HTTP/HTTPS 脚本下载地址；新地址通过脚本及身份校验后保存，检查本身不会替换脚本。没有保存地址且未提供地址时，响应包含 `needsSourceUrl: true`，不能据此认为音源已经是最新版本。共享只读音源只能由所有者配置地址和更新。
+
 ## 破坏性迁移
 
 裸 `/api/*` 已移除并返回 HTTP `410 Gone`，旧 Web 页面、旧 Windows 客户端和直接调用旧接口的脚本不能继续使用。详细升级步骤见 [API v1 迁移说明](api-v1-migration.md)。
