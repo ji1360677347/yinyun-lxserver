@@ -5,7 +5,7 @@
 ## 部署前准备
 
 - 推荐：Docker 24 或更高版本、Docker Compose v2。
-- 源码运行：Node.js 22.12 或更高版本，推荐 Node.js 24 LTS。
+- 源码运行：Node.js 22.23.4 及以上 22.x、24.22.1 及以上 24.x，或 26.12.1 及以上 26.x；生产环境推荐 Node.js 24 LTS。
 - 默认端口：`9527`。
 - 正式镜像：`bobcc4/yinyun-lxserver:latest`。
 - 至少持久化 `/server/data`；需要下载和管理源文件时，还应持久化 `/server/cache`、`/server/music` 和 `/server/logs`。

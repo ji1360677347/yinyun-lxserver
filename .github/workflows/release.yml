@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Resolve and validate version
@@ -106,7 +106,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Install Linux dependencies
@@ -119,6 +119,9 @@ jobs:
         run: npm ci
         env:
           npm_config_cpu: ${{ matrix.arch }}
+
+      - name: Verify Electron embeds a patched Node.js runtime
+        run: node scripts/check-electron-runtime.js
 
       - name: Read Electron version
         id: electron
@@ -161,7 +164,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Install and build

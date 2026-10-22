@@ -6,7 +6,7 @@
   <p>
     <img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build Status">
     <img src="https://img.shields.io/badge/version-v1.6.5-blue?style=flat-square" alt="Version">
-    <img src="https://img.shields.io/badge/node-%3E%3D22.12-green?style=flat-square" alt="Node Version">
+    <img src="https://img.shields.io/badge/node-22.23.4%20%7C%2024.22.1%20%7C%2026.12.1-green?style=flat-square" alt="Node Version">
     <img src="https://img.shields.io/github/license/bobcc4/yinyun-lxserver?style=flat-square" alt="License">
     <br>
     <br>
@@ -111,7 +111,7 @@ The Web Player is deeply optimized for mobile devices, providing a native App-li
 
 Built with **Node.js**, supporting multiple deployment methods.
 
-Running from source requires Node.js `22.12.0` or later. Node.js 24 LTS is recommended.
+For source deployments, use a patched Node.js release: 22.23.4 or later in 22.x, 24.22.1 or later in 24.x, or 26.12.1 or later in 26.x. Node.js 24 LTS is recommended for production.
 
 
 ### Option 1: Windows Client

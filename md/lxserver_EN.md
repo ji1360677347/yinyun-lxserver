@@ -6,7 +6,7 @@
   <p>
     <img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build Status">
     <img src="https://img.shields.io/badge/version-v1.4.0-blue?style=flat-square" alt="Version">
-    <img src="https://img.shields.io/badge/node-%3E%3D22.12-green?style=flat-square" alt="Node Version">
+<img src="https://img.shields.io/badge/node-22.23.4%20%7C%2024.22.1%20%7C%2026.12.1-green?style=flat-square" alt="Node Version">
     <img src="https://img.shields.io/github/license/bobcc4/yinyun-lxserver?style=flat-square" alt="License">
     <br>
     <br>

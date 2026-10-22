@@ -9,7 +9,7 @@
   <p>
     <img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build Status">
     <img src="https://img.shields.io/github/v/release/bobcc4/yinyun-lxserver?style=flat-square&color=blue" alt="Version">
-    <img src="https://img.shields.io/badge/node-%3E%3D22.12-green?style=flat-square" alt="Node Version">
+    <img src="https://img.shields.io/badge/node-22.23.4%20%7C%2024.22.1%20%7C%2026.12.1-green?style=flat-square" alt="Node Version">
     <img src="https://img.shields.io/github/license/bobcc4/yinyun-lxserver?style=flat-square" alt="License">
     <br>
     <br>
@@ -133,7 +133,7 @@ Web 播放器保留两种歌单分享方式：分享给同一服务端的其他�
 
 本项目基于 **Node.js** 开发，支持多种部署方式。
 
-直接运行源码需要 Node.js `22.12.0` 或更高版本，推荐使用 Node.js 24 LTS。
+直接运行源码请使用已包含安全修复的 Node.js 版本：22.23.4 及以上 22.x、24.22.1 及以上 24.x，或 26.12.1 及以上 26.x。生产环境推荐使用 Node.js 24 LTS。
 
 ### 方式一：Windows 客户端
 
