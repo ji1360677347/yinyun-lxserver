@@ -12,6 +12,11 @@ on:
         required: true
         default: false
         type: boolean
+      allow_unpatched_electron:
+        description: Allow the known Electron 43.8.3 / Node.js 24.22.0 runtime for this explicitly approved release only
+        required: true
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -122,6 +127,8 @@ jobs:
 
       - name: Verify Electron embeds a patched Node.js runtime
         run: node scripts/check-electron-runtime.js
+        env:
+          YINYUN_ALLOW_UNPATCHED_ELECTRON: ${{ inputs.allow_unpatched_electron && '1' || '0' }}
 
       - name: Read Electron version
         id: electron
